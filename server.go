@@ -51,7 +51,7 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 			var err error
 			read, err = conn.Read(buffer[:])
 			if err != nil {
-				slog.Debug(conn.RemoteAddr().String() + " has closed connection")
+				slog.Debug(fmt.Sprintf("error reading from %s, closing connection...", conn.RemoteAddr()))
 				conn.Close()
 				return
 			}
@@ -71,7 +71,7 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 		}
 
 		request := Parse(requestBuilder.String())
-		slog.Debug("received " + request.String())
+		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), request.String()))
 
 		server.handle(request, conn)
 	}
@@ -79,12 +79,11 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 
 func (server Server) handle(request *Request, conn net.Conn) {
 	var response *Response
-	requestPath := request.path
-	if requestPath == "/" {
-		requestPath = "/index.html"
+	if request.path == "/" {
+		request.path = "/index.html"
 	}
 
-	path := path.Join(server.DocumentRoot, requestPath)
+	path := path.Join(server.DocumentRoot, request.path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		_, isPathError := err.(*os.PathError)
@@ -101,5 +100,5 @@ func (server Server) handle(request *Request, conn net.Conn) {
 		conn.Close()
 	}
 
-	slog.Debug(fmt.Sprintf("wrote %d bytes to %s", written, conn.RemoteAddr()))
+	slog.Info(fmt.Sprintf("%s %s (%d bytes)", conn.RemoteAddr(), request, written))
 }
