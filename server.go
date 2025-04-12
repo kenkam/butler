@@ -1,22 +1,27 @@
 package butler
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path"
+	"slices"
 	"strings"
-)
-
-const (
-	bufferSize = 1024
 )
 
 type Server struct {
 	Host         string
 	Port         int
 	DocumentRoot string
+}
+
+type Context struct {
+	Scanner  *bufio.Scanner
+	Conn     net.Conn
+	Request  *Request
+	Response Response
 }
 
 func (server Server) Listen() error {
@@ -35,56 +40,39 @@ func (server Server) Listen() error {
 		}
 
 		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
-
 		go server.listenAndHandleRequests(conn)
 	}
 }
 
 func (server Server) listenAndHandleRequests(conn net.Conn) {
 	for {
-		var read int
-		var requestBuilder strings.Builder
-		totalRead := 0
+		c := &Context{}
 
-		for {
-			buffer := [bufferSize]byte{}
-			var err error
-			read, err = conn.Read(buffer[:])
-			if err != nil {
-				slog.Debug(fmt.Sprintf("error reading from %s, closing connection...", conn.RemoteAddr()))
-				conn.Close()
-				return
-			}
+		scanner := bufio.NewScanner(conn)
 
-			// TODO read headers first instead of the entire request body
-			// We can use bufio.Scanner to do this
-			written, err := requestBuilder.WriteString(string(buffer[:read]))
-			if err != nil {
-				slog.Error("failed to write request")
-				conn.Close()
-			}
+		c.Scanner = scanner
+		c.Conn = conn
 
-			totalRead += written
-
-			if read != bufferSize {
-				break
-			}
+		c, err := ParseContext(c)
+		if err != nil {
+			slog.Debug(fmt.Sprintf("error reading from %s, closing connection...", conn.RemoteAddr()))
+			c.Conn.Close()
+			return
 		}
 
-		request := ParseRequest(requestBuilder.String())
-		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), request))
+		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), c.Request))
 
-		server.handle(request, conn)
+		server.handle(c)
 	}
 }
 
-func (server Server) handle(request *Request, conn net.Conn) {
+func (server Server) handle(c *Context) {
 	var response *Response
-	if request.path == "/" {
-		request.path = "/index.html"
+	if c.Request.Path == "/" {
+		c.Request.Path = "/index.html"
 	}
 
-	path := path.Join(server.DocumentRoot, request.path)
+	path := path.Join(server.DocumentRoot, c.Request.Path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		_, isPathError := err.(*os.PathError)
@@ -95,24 +83,20 @@ func (server Server) handle(request *Request, conn net.Conn) {
 		response = Ok(data)
 	}
 
-	hEncoding, ok := request.headers[HeaderAcceptEncoding]
 	gzip := false
+	hEncoding, ok := c.Request.Headers[HeaderAcceptEncoding]
 	if ok {
 		v := strings.Split(hEncoding[0], ", ")
-		for _, s := range v {
-			s = strings.TrimSpace(s)
-			if s == "gzip" {
-				gzip = true
-				break
-			}
+		if slices.Contains(v, "gzip") {
+			gzip = true
 		}
 	}
 
-	written, err := conn.Write(response.Bytes(gzip))
+	written, err := c.Conn.Write(response.Bytes(gzip, c.Request.Method == RequestHead))
 	if err != nil {
-		slog.Debug(fmt.Sprintf("failed writing response to %s", conn.RemoteAddr()))
-		conn.Close()
+		slog.Debug(fmt.Sprintf("failed writing response to %s", c.Conn.RemoteAddr()))
+		c.Conn.Close()
 	}
 
-	slog.Info(fmt.Sprintf("%s %s (%d bytes)", conn.RemoteAddr(), request, written))
+	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))
 }

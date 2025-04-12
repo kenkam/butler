@@ -24,7 +24,7 @@ func NotFound() *Response {
 	return &Response{"HTTP/1.1", http.StatusNotFound, make(map[string]string), nil}
 }
 
-func (r Response) Bytes(compressGzip bool) []byte {
+func (r Response) Bytes(compressGzip bool, headersOnly bool) []byte {
 	var buffer bytes.Buffer
 	rLength := len(r.Content)
 
@@ -53,6 +53,10 @@ func (r Response) Bytes(compressGzip bool) []byte {
 	b = append(b, []byte(statusCode)...)
 	b = append(b, r.headerBytes()...)
 	b = append(b, []byte("\n")...)
+
+	if headersOnly {
+		return b
+	}
 
 	if compressGzip {
 		b = append(b, buffer.Bytes()...)
