@@ -5,6 +5,8 @@ A http server written in go, for learning.
 ## TODO
 
 * [X] GET requests
+  * [x] Compression
+  * [ ] Support scanning headers
 * [ ] HEAD requests
 * [ ] Keep alives
 * [ ] Caches

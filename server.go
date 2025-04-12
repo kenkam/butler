@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	bufferSize = 24
+	bufferSize = 1024
 )
 
 type Server struct {
@@ -56,11 +56,8 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 				return
 			}
 
-			if read != bufferSize {
-				break
-			}
-
-			// TODO read headers first
+			// TODO read headers first instead of the entire request body
+			// We can use bufio.Scanner to do this
 			written, err := requestBuilder.WriteString(string(buffer[:read]))
 			if err != nil {
 				slog.Error("failed to write request")
@@ -68,10 +65,14 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 			}
 
 			totalRead += written
+
+			if read != bufferSize {
+				break
+			}
 		}
 
-		request := Parse(requestBuilder.String())
-		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), request.String()))
+		request := ParseRequest(requestBuilder.String())
+		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), request))
 
 		server.handle(request, conn)
 	}
@@ -94,7 +95,20 @@ func (server Server) handle(request *Request, conn net.Conn) {
 		response = Ok(data)
 	}
 
-	written, err := conn.Write(response.ToBytes())
+	hEncoding, ok := request.headers[HeaderAcceptEncoding]
+	gzip := false
+	if ok {
+		v := strings.Split(hEncoding[0], ", ")
+		for _, s := range v {
+			s = strings.TrimSpace(s)
+			if s == "gzip" {
+				gzip = true
+				break
+			}
+		}
+	}
+
+	written, err := conn.Write(response.Bytes(gzip))
 	if err != nil {
 		slog.Debug(fmt.Sprintf("failed writing response to %s", conn.RemoteAddr()))
 		conn.Close()
