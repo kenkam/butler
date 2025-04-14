@@ -29,7 +29,6 @@ func ParseContext(c *Context) (*Context, error) {
 		}
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
 			// We have a full newline-terminated line.
-			fmt.Println(string(dropCR(data[0:i])))
 			if c.Request.Method == RequestGet || c.Request.Method == RequestHead {
 				if i == 1 {
 					return 0, nil, bufio.ErrFinalToken

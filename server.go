@@ -2,6 +2,7 @@ package butler
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -62,11 +63,26 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 
 		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), c.Request))
 
-		server.handle(c)
+		err = server.handleRequest(c)
+		if err != nil {
+			slog.Error(fmt.Sprintf("failed handling request %s for %s: %s", c.Request, c.Conn.RemoteAddr(), err))
+			c.Conn.Close()
+			return
+		}
+
+		cHeaders := c.Request.Headers[HeaderConnection]
+		if len(cHeaders) > 0 {
+			connection := cHeaders[0]
+			if strings.EqualFold(connection, "close") {
+				slog.Debug(fmt.Sprintf("no keep-alive requested, closing connection for %s", c.Conn.RemoteAddr()))
+				c.Conn.Close()
+				return
+			}
+		}
 	}
 }
 
-func (server Server) handle(c *Context) {
+func (server Server) handleRequest(c *Context) error {
 	var response *Response
 	if c.Request.Path == "/" {
 		c.Request.Path = "/index.html"
@@ -94,9 +110,9 @@ func (server Server) handle(c *Context) {
 
 	written, err := c.Conn.Write(response.Bytes(gzip, c.Request.Method == RequestHead))
 	if err != nil {
-		slog.Debug(fmt.Sprintf("failed writing response to %s", c.Conn.RemoteAddr()))
-		c.Conn.Close()
+		return errors.New("failed writing response")
 	}
 
 	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))
+	return nil
 }
