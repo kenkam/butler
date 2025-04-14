@@ -15,7 +15,7 @@ type Server struct {
 	Host         string
 	Port         int
 	DocumentRoot string
-	ListenCh     chan bool
+	listenCh     chan bool
 }
 
 type Context struct {
@@ -36,7 +36,7 @@ func (server Server) Listen() error {
 	}
 
 	slog.Info("butler listening on " + address)
-	server.ListenCh <- true
+	server.listenCh <- true
 
 	for {
 		conn, err := listen.Accept()
@@ -76,7 +76,6 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 			if strings.EqualFold(connection, "close") {
 				slog.Debug(fmt.Sprintf("no keep-alive requested, closing connection for %s", c.Conn.RemoteAddr()))
 				c.Conn.Close()
-				return
 			}
 		}
 	}
