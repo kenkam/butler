@@ -15,7 +15,10 @@ func TestServerSupportsGzip(t *testing.T) {
 	log.SetOutput(io.Discard)
 
 	s := NewServer("localhost", 7777, "./testdata")
-	go s.Listen()
+	go func() {
+		s.Listen()
+		defer s.Close()
+	}()
 
 	<-s.listenCh
 
@@ -33,6 +36,8 @@ func TestServerSupportsGzip(t *testing.T) {
 	if r.Header["Content-Encoding"][0] != "gzip" {
 		t.Error("returned response does not have Content-Encoding: gzip")
 	}
+
+	s.Close()
 }
 
 func TestServerClosesConnection(t *testing.T) {
@@ -40,7 +45,10 @@ func TestServerClosesConnection(t *testing.T) {
 	log.SetOutput(io.Discard)
 
 	s := NewServer("localhost", 7777, "./testdata")
-	go s.Listen()
+	go func() {
+		s.Listen()
+		defer s.Close()
+	}()
 
 	<-s.listenCh
 

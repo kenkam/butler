@@ -15,6 +15,7 @@ type Server struct {
 	Host         string
 	Port         int
 	DocumentRoot string
+	listener     net.Listener
 	listenCh     chan bool
 }
 
@@ -25,12 +26,13 @@ type Context struct {
 }
 
 func NewServer(host string, port int, docRoot string) *Server {
-	return &Server{host, port, docRoot, make(chan bool)}
+	return &Server{host, port, docRoot, nil, make(chan bool)}
 }
 
-func (server Server) Listen() error {
+func (server *Server) Listen() error {
 	address := fmt.Sprintf("%s:%d", server.Host, server.Port)
 	listen, err := net.Listen("tcp", address)
+	server.listener = listen
 	if err != nil {
 		return err
 	}
@@ -47,6 +49,10 @@ func (server Server) Listen() error {
 		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
 		go server.listenAndHandleRequests(conn)
 	}
+}
+
+func (server Server) Close() error {
+	return server.listener.Close()
 }
 
 func (server Server) listenAndHandleRequests(conn net.Conn) {
