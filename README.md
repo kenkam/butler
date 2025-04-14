@@ -7,7 +7,7 @@ A http server written in go, for learning.
 * [x] GET requests
   * [x] Compression
 * [x] HEAD requests
-* [ ] Keep alives
+* [x] Keep alives
 * [ ] Testing
 * [ ] Caches
 * [ ] SSL / TLS

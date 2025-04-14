@@ -1,7 +1,6 @@
 package butler
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,7 +18,6 @@ type Server struct {
 }
 
 type Context struct {
-	Scanner  *bufio.Scanner
 	Conn     net.Conn
 	Request  *Request
 	Response Response
@@ -47,20 +45,16 @@ func (server Server) Listen() error {
 
 func (server Server) listenAndHandleRequests(conn net.Conn) {
 	for {
-		c := &Context{}
+		c := &Context{Conn: conn}
 
-		scanner := bufio.NewScanner(conn)
-
-		c.Scanner = scanner
-		c.Conn = conn
-
-		c, err := ParseContext(c)
+		r, err := ParseRequest(conn)
 		if err != nil {
 			slog.Debug(fmt.Sprintf("error reading from %s, closing connection...", conn.RemoteAddr()))
 			c.Conn.Close()
 			return
 		}
 
+		c.Request = r
 		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), c.Request))
 
 		err = server.handleRequest(c)

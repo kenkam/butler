@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -19,9 +20,10 @@ type Request struct {
 	Headers map[string][]string
 }
 
-func ParseContext(c *Context) (*Context, error) {
+func ParseRequest(conn net.Conn) (*Request, error) {
+	scanner := bufio.NewScanner(conn)
 	headers := make(map[string][]string)
-	c.Request = &Request{Headers: headers}
+	request := &Request{Headers: headers}
 
 	scanLines := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -29,7 +31,7 @@ func ParseContext(c *Context) (*Context, error) {
 		}
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
 			// We have a full newline-terminated line.
-			if c.Request.Method == RequestGet || c.Request.Method == RequestHead {
+			if request.Method == RequestGet || request.Method == RequestHead {
 				if i == 1 {
 					return 0, nil, bufio.ErrFinalToken
 				}
@@ -42,7 +44,7 @@ func ParseContext(c *Context) (*Context, error) {
 			return len(data), dropCR(data), nil
 		}
 		// If the request method is GET, ignore request body
-		if c.Request.Method == RequestGet {
+		if request.Method == RequestGet {
 			if string(token) == "" {
 				return 0, nil, bufio.ErrFinalToken
 			}
@@ -51,23 +53,23 @@ func ParseContext(c *Context) (*Context, error) {
 		return 0, nil, nil
 	}
 
-	c.Scanner.Split(scanLines)
+	scanner.Split(scanLines)
 
-	if !c.Scanner.Scan() {
-		return c, errors.New("no data received")
+	if !scanner.Scan() {
+		return nil, errors.New("no data received")
 	}
 
-	if c.Scanner.Err() != nil {
-		return c, c.Scanner.Err()
+	if scanner.Err() != nil {
+		return nil, scanner.Err()
 	}
-	controlData := c.Scanner.Text()
+	controlData := scanner.Text()
 	cdTokens := strings.Fields(controlData)
 
 	// TODO Parse HTTP Version
-	c.Request.Method, c.Request.Path = cdTokens[0], cdTokens[1]
+	request.Method, request.Path = cdTokens[0], cdTokens[1]
 
-	for c.Scanner.Scan() {
-		line := c.Scanner.Text()
+	for scanner.Scan() {
+		line := scanner.Text()
 
 		hTokens := strings.Split(line, ":")
 		if len(hTokens) == 0 {
@@ -75,7 +77,7 @@ func ParseContext(c *Context) (*Context, error) {
 		}
 
 		hName := hTokens[0]
-		hValue, ok := c.Request.Headers[hName]
+		hValue, ok := request.Headers[hName]
 		if !ok {
 			hValue = make([]string, 0)
 		}
@@ -86,7 +88,7 @@ func ParseContext(c *Context) (*Context, error) {
 		headers[hName] = hValue
 	}
 
-	return c, nil
+	return request, nil
 }
 
 func (r Request) String() string {
