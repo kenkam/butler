@@ -8,7 +8,7 @@ A http server written in go, for learning.
   * [x] Compression
 * [x] HEAD requests
 * [x] Keep alives
-* [ ] Testing
+* [x] Testing
 * [ ] Caches
 * [ ] SSL / TLS
 * [ ] Proxy backends

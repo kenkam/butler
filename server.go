@@ -15,12 +15,17 @@ type Server struct {
 	Host         string
 	Port         int
 	DocumentRoot string
+	ListenCh     chan bool
 }
 
 type Context struct {
 	Conn     net.Conn
 	Request  *Request
 	Response Response
+}
+
+func NewServer(host string, port int, docRoot string) *Server {
+	return &Server{host, port, docRoot, make(chan bool)}
 }
 
 func (server Server) Listen() error {
@@ -31,6 +36,7 @@ func (server Server) Listen() error {
 	}
 
 	slog.Info("butler listening on " + address)
+	server.ListenCh <- true
 
 	for {
 		conn, err := listen.Accept()

@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"strings"
 )
 
@@ -18,9 +18,10 @@ type Request struct {
 	Method  string
 	Path    string
 	Headers map[string][]string
+	Body    string
 }
 
-func ParseRequest(conn net.Conn) (*Request, error) {
+func ParseRequest(conn io.Reader) (*Request, error) {
 	scanner := bufio.NewScanner(conn)
 	headers := make(map[string][]string)
 	request := &Request{Headers: headers}
@@ -29,26 +30,24 @@ func ParseRequest(conn net.Conn) (*Request, error) {
 		if atEOF && len(data) == 0 {
 			return 0, nil, nil
 		}
+
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
-			// We have a full newline-terminated line.
+			// If this is a GET or HEAD request and we encounter a newline only,
+			// then we stop parsing the request
 			if request.Method == RequestGet || request.Method == RequestHead {
-				if i == 1 {
+				if len(dropCR(data[0:i])) == 0 {
 					return 0, nil, bufio.ErrFinalToken
 				}
 			}
 
 			return i + 1, dropCR(data[0:i]), nil
 		}
+
 		// If we're at EOF, we have a final, non-terminated line. Return it.
 		if atEOF {
 			return len(data), dropCR(data), nil
 		}
-		// If the request method is GET, ignore request body
-		if request.Method == RequestGet {
-			if string(token) == "" {
-				return 0, nil, bufio.ErrFinalToken
-			}
-		}
+
 		// Request more data.
 		return 0, nil, nil
 	}
