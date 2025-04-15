@@ -12,16 +12,30 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
+type Config struct {
+	Listen             int       `yaml:"Listen"`
+	ListenTLS          int       `yaml:"ListenTLS"`
+	RedirectHTTP       bool      `yaml:"RedirectHTTP"`
+	Backends           []Backend `yaml:"Backends"`
+	CertificateFile    string    `yaml:"CertificateFile"`
+	CertificateKeyFile string    `yaml:"CertificateKeyFile"`
+	DocumentRoot       string    `yaml:"DocumentRoot"`
+}
+
 type Server struct {
-	Hostname     string
-	Port         int
-	DocumentRoot string
-	Backends     []Backend
-	listener     net.Listener
-	listenCh     chan bool
-	listenTLSCh  chan bool
+	Hostname      string
+	ListenPort    int
+	ListenTLSPort int
+	Certificate   tls.Certificate
+	DocumentRoot  string
+	backends      []Backend
+	listener      net.Listener
+	listenCh      chan bool
+	listenTLSCh   chan bool
 }
 
 type Backend struct {
@@ -35,8 +49,50 @@ type Context struct {
 	Response *Response
 }
 
-func NewServer(host string, port int, docRoot string) *Server {
-	return &Server{host, port, docRoot, make([]Backend, 0), nil, make(chan bool, 1), make(chan bool, 1)}
+func NewServerYaml(yamlFile string) (*Server, error) {
+	f, err := os.Open(yamlFile)
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	c := &Config{}
+	err = yaml.Unmarshal(b, c)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewServer(c)
+}
+
+func NewServer(c *Config) (*Server, error) {
+	s := &Server{
+		Hostname:      "0.0.0.0",
+		ListenPort:    c.Listen,
+		ListenTLSPort: c.ListenTLS,
+		DocumentRoot:  c.DocumentRoot,
+		listenCh:      make(chan bool, 1),
+		listenTLSCh:   make(chan bool, 1),
+		backends:      make([]Backend, 0),
+	}
+
+	if c.CertificateFile != "" || c.CertificateKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(c.CertificateFile, c.CertificateKeyFile)
+		if err != nil {
+			return nil, err
+		}
+		s.Certificate = cert
+	}
+
+	for _, v := range c.Backends {
+		s.AddBackend(v.Addr, v.Path)
+	}
+
+	return s, nil
 }
 
 func (server *Server) AddBackend(addr string, path string) error {
@@ -44,18 +100,18 @@ func (server *Server) AddBackend(addr string, path string) error {
 		path = "/"
 	}
 
-	for _, b := range server.Backends {
+	for _, b := range server.backends {
 		if b.Addr == addr {
 			return fmt.Errorf("backend %s already exists", addr)
 		}
 	}
 
-	server.Backends = append(server.Backends, Backend{addr, path})
+	server.backends = append(server.backends, Backend{addr, path})
 	return nil
 }
 
 func (server *Server) Listen() error {
-	address := fmt.Sprintf("%s:%d", server.Hostname, server.Port)
+	address := fmt.Sprintf("%s:%d", server.Hostname, server.ListenPort)
 	listen, err := net.Listen("tcp", address)
 	server.listener = listen
 	if err != nil {
@@ -77,14 +133,10 @@ func (server *Server) Listen() error {
 }
 
 func (server *Server) ListenTLS() error {
-	address := fmt.Sprintf("%s:%d", server.Hostname, server.Port)
-	certs, err := tls.LoadX509KeyPair("/home/kenneth/Certs/butler.crt", "/home/kenneth/Certs/butler.key")
-	if err != nil {
-		return err
-	}
+	address := fmt.Sprintf("%s:%d", server.Hostname, server.ListenTLSPort)
 
 	listen, err := tls.Listen("tcp", address, &tls.Config{
-		Certificates: []tls.Certificate{certs},
+		Certificates: []tls.Certificate{server.Certificate},
 	})
 
 	if err != nil {
@@ -217,7 +269,7 @@ func (server *Server) serveFromDocumentRoot(c *Context) *Response {
 }
 
 func (server *Server) GetBackend(c *Context) (*Backend, bool) {
-	for _, b := range server.Backends {
+	for _, b := range server.backends {
 		if strings.HasPrefix(b.Path, c.Request.Path) {
 			return &b, true
 		}

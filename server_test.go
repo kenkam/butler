@@ -14,7 +14,10 @@ func TestServerSupportsGzip(t *testing.T) {
 	// Mute server logs
 	log.SetOutput(io.Discard)
 
-	s := NewServer("localhost", 7777, "./testdata")
+	s, _ := NewServer(&Config{
+		Listen:       7777,
+		DocumentRoot: "./testdata",
+	})
 	go func() {
 		s.Listen()
 		defer s.Close()
@@ -44,7 +47,10 @@ func TestServerClosesConnection(t *testing.T) {
 	// Mute server logs
 	log.SetOutput(io.Discard)
 
-	s := NewServer("localhost", 7777, "./testdata")
+	s, _ := NewServer(&Config{
+		Listen:       7777,
+		DocumentRoot: "./testdata",
+	})
 	go func() {
 		s.Listen()
 		defer s.Close()
