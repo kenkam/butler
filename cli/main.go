@@ -20,6 +20,7 @@ func main() {
 	log.SetOutput(new(iso9601Writer))
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
-	server := butler.Server{Host: "localhost", Port: 8080, DocumentRoot: "../void-cascade"}
+	server := butler.NewServer("localhost", 8080, "../../void-cascade")
+	server.AddBackend("127.0.0.1:8000", "/")
 	log.Fatal(server.Listen())
 }

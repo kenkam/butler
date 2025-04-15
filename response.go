@@ -12,16 +12,20 @@ import (
 type Response struct {
 	HttpVersion string
 	StatusCode  int
-	Headers     map[string]string
+	Headers     map[string][]string
 	Content     []byte
 }
 
 func Ok(content []byte) *Response {
-	return &Response{"HTTP/1.1", http.StatusOK, make(map[string]string), content}
+	return StatusCode(http.StatusOK, content)
 }
 
 func NotFound() *Response {
-	return &Response{"HTTP/1.1", http.StatusNotFound, make(map[string]string), nil}
+	return StatusCode(http.StatusNotFound, nil)
+}
+
+func StatusCode(statusCode int, content []byte) *Response {
+	return &Response{"HTTP/1.1", statusCode, make(map[string][]string), content}
 }
 
 func (r Response) Bytes(compressGzip bool, headersOnly bool) []byte {
@@ -42,12 +46,12 @@ func (r Response) Bytes(compressGzip bool, headersOnly bool) []byte {
 		gzipWriter.Close()
 		rLength = buffer.Len()
 
-		r.Headers[HeaderContentEncoding] = "gzip"
+		r.Headers[HeaderContentEncoding] = []string{"gzip"}
 	}
 
 	statusCode := fmt.Sprintf("%s %d %s\n", r.HttpVersion, r.StatusCode, http.StatusText(r.StatusCode))
 
-	r.Headers[HeaderContentLength] = strconv.Itoa(rLength)
+	r.Headers[HeaderContentLength] = []string{strconv.Itoa(rLength)}
 
 	b := []byte{}
 	b = append(b, []byte(statusCode)...)
@@ -69,8 +73,10 @@ func (r Response) Bytes(compressGzip bool, headersOnly bool) []byte {
 
 func (r Response) headerBytes() []byte {
 	b := []byte{}
-	for k, v := range r.Headers {
-		b = append(b, []byte(fmt.Sprintf("%s: %s\n", k, v))...)
+	for k, vs := range r.Headers {
+		for _, v := range vs {
+			b = fmt.Appendf(b, "%s: %s\n", k, v)
+		}
 	}
 	return b
 }

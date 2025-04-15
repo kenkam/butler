@@ -3,8 +3,10 @@ package butler
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"slices"
@@ -12,25 +14,46 @@ import (
 )
 
 type Server struct {
-	Host         string
+	Hostname     string
 	Port         int
 	DocumentRoot string
+	Backends     []Backend
 	listener     net.Listener
 	listenCh     chan bool
+}
+
+type Backend struct {
+	Addr string
+	Path string
 }
 
 type Context struct {
 	Conn     net.Conn
 	Request  *Request
-	Response Response
+	Response *Response
 }
 
 func NewServer(host string, port int, docRoot string) *Server {
-	return &Server{host, port, docRoot, nil, make(chan bool)}
+	return &Server{host, port, docRoot, make([]Backend, 0), nil, make(chan bool, 1)}
+}
+
+func (server *Server) AddBackend(addr string, path string) error {
+	if path == "" {
+		path = "/"
+	}
+
+	for _, b := range server.Backends {
+		if b.Addr == addr {
+			return fmt.Errorf("backend %s already exists", addr)
+		}
+	}
+
+	server.Backends = append(server.Backends, Backend{addr, path})
+	return nil
 }
 
 func (server *Server) Listen() error {
-	address := fmt.Sprintf("%s:%d", server.Host, server.Port)
+	address := fmt.Sprintf("%s:%d", server.Hostname, server.Port)
 	listen, err := net.Listen("tcp", address)
 	server.listener = listen
 	if err != nil {
@@ -61,7 +84,7 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 
 		r, err := ParseRequest(conn)
 		if err != nil {
-			slog.Debug(fmt.Sprintf("error reading from %s, closing connection...", conn.RemoteAddr()))
+			slog.Debug(fmt.Sprintf("error reading from %s: %s, closing connection...", conn.RemoteAddr(), err.Error()))
 			c.Conn.Close()
 			return
 		}
@@ -82,6 +105,7 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 			if strings.EqualFold(connection, "close") {
 				slog.Debug(fmt.Sprintf("no keep-alive requested, closing connection for %s", c.Conn.RemoteAddr()))
 				c.Conn.Close()
+				return
 			}
 		}
 	}
@@ -89,6 +113,60 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 
 func (server Server) handleRequest(c *Context) error {
 	var response *Response
+
+	if backend, ok := server.GetBackend(c); ok {
+		url := "http://" + backend.Addr + c.Request.Path
+		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
+		if err != nil {
+			return err
+		}
+
+		for k, vs := range c.Request.Headers {
+			for _, v := range vs {
+				r.Header.Add(k, v)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			return err
+		}
+
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		response = StatusCode(resp.StatusCode, b)
+	} else {
+		response = server.serveFromDocumentRoot(c)
+	}
+
+	gzip := false
+	hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
+	responseGzipped := slices.Contains(response.Headers[HeaderAcceptEncoding], "gzip")
+	if hasEncodingHeader && !responseGzipped {
+		v := strings.Split(hEncoding[0], ", ")
+		if slices.Contains(v, "gzip") {
+			gzip = true
+		}
+	}
+
+	response.Headers["Server"] = []string{"butler/0.1"}
+
+	written, err := c.Conn.Write(response.Bytes(gzip, c.Request.Method == RequestHead))
+	if err != nil {
+		return errors.New("failed writing response")
+	}
+
+	c.Response = response
+	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))
+	return nil
+}
+
+func (server *Server) serveFromDocumentRoot(c *Context) *Response {
+	var r *Response
+
 	if c.Request.Path == "/" {
 		c.Request.Path = "/index.html"
 	}
@@ -98,26 +176,21 @@ func (server Server) handleRequest(c *Context) error {
 	if err != nil {
 		_, isPathError := err.(*os.PathError)
 		if isPathError {
-			response = NotFound()
+			r = NotFound()
 		}
 	} else {
-		response = Ok(data)
+		r = Ok(data)
 	}
 
-	gzip := false
-	hEncoding, ok := c.Request.Headers[HeaderAcceptEncoding]
-	if ok {
-		v := strings.Split(hEncoding[0], ", ")
-		if slices.Contains(v, "gzip") {
-			gzip = true
+	return r
+}
+
+func (server *Server) GetBackend(c *Context) (*Backend, bool) {
+	for _, b := range server.Backends {
+		if strings.HasPrefix(b.Path, c.Request.Path) {
+			return &b, true
 		}
 	}
 
-	written, err := c.Conn.Write(response.Bytes(gzip, c.Request.Method == RequestHead))
-	if err != nil {
-		return errors.New("failed writing response")
-	}
-
-	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))
-	return nil
+	return nil, false
 }
