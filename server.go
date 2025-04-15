@@ -1,6 +1,7 @@
 package butler
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ type Server struct {
 	Backends     []Backend
 	listener     net.Listener
 	listenCh     chan bool
+	listenTLSCh  chan bool
 }
 
 type Backend struct {
@@ -34,7 +36,7 @@ type Context struct {
 }
 
 func NewServer(host string, port int, docRoot string) *Server {
-	return &Server{host, port, docRoot, make([]Backend, 0), nil, make(chan bool, 1)}
+	return &Server{host, port, docRoot, make([]Backend, 0), nil, make(chan bool, 1), make(chan bool, 1)}
 }
 
 func (server *Server) AddBackend(addr string, path string) error {
@@ -62,6 +64,35 @@ func (server *Server) Listen() error {
 
 	slog.Info("butler listening on " + address)
 	server.listenCh <- true
+
+	for {
+		conn, err := listen.Accept()
+		if err != nil {
+			return err
+		}
+
+		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
+		go server.listenAndHandleRequests(conn)
+	}
+}
+
+func (server *Server) ListenTLS() error {
+	address := fmt.Sprintf("%s:%d", server.Hostname, server.Port)
+	certs, err := tls.LoadX509KeyPair("/home/kenneth/Certs/butler.crt", "/home/kenneth/Certs/butler.key")
+	if err != nil {
+		return err
+	}
+
+	listen, err := tls.Listen("tcp", address, &tls.Config{
+		Certificates: []tls.Certificate{certs},
+	})
+
+	if err != nil {
+		return err
+	}
+
+	slog.Info("butler listening on " + address)
+	server.listenTLSCh <- true
 
 	for {
 		conn, err := listen.Accept()

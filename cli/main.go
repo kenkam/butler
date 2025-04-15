@@ -22,5 +22,5 @@ func main() {
 
 	server := butler.NewServer("localhost", 8080, "../../void-cascade")
 	server.AddBackend("127.0.0.1:8000", "/")
-	log.Fatal(server.Listen())
+	log.Fatal(server.ListenTLS())
 }

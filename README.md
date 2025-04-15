@@ -10,9 +10,11 @@ A http server written in go, for learning.
 * [x] Keep alives
 * [x] Testing
 * [x] Proxy backends
-* [ ] SSL / TLS
+* [x] SSL / TLS
 * [ ] Backend registration / healthchecks
 * [ ] Read from config
+* [ ] Go versioning
+* [ ] CI/CD
 * [ ] POST / PUT requests via a cgi-bin like interface
 * [ ] Caches
 
