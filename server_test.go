@@ -23,7 +23,7 @@ func TestServerSupportsGzip(t *testing.T) {
 		defer s.Close()
 	}()
 
-	<-s.listenCh
+	<-s.ListenCh
 
 	req, _ := http.NewRequest("GET", "http://localhost:7777/index.html", nil)
 	req.Header.Add("Accept-Encoding", "gzip")
@@ -56,7 +56,7 @@ func TestServerClosesConnection(t *testing.T) {
 		defer s.Close()
 	}()
 
-	<-s.listenCh
+	<-s.ListenCh
 
 	addr, _ := net.ResolveTCPAddr("tcp", "localhost:7777")
 	conn, _ := net.DialTCP("tcp", nil, addr)

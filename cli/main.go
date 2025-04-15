@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -30,8 +31,21 @@ func (c *ServeCmd) Run() error {
 		log.Fatal(err)
 	}
 
-	server.AddBackend("127.0.0.1:8000", "/")
-	log.Fatal(server.ListenTLS())
+	slog.Info("starting butler...")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Fatal(server.Listen())
+	}()
+	go func() {
+		defer wg.Done()
+		<-server.ListenCh
+		log.Fatal(server.ListenTLS())
+	}()
+
+	wg.Wait()
 	return nil
 }
 

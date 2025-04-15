@@ -5,4 +5,6 @@ const (
 	HeaderContentLength   = "Content-Length"
 	HeaderContentEncoding = "Content-Encoding"
 	HeaderConnection      = "Connection"
+	HeaderHost            = "Host"
+	HeaderLocation        = "Location"
 )

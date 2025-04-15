@@ -15,16 +15,18 @@ const (
 )
 
 type Request struct {
+	Scheme  string
+	Host    string
 	Method  string
 	Path    string
 	Headers map[string][]string
 	Body    string
 }
 
-func ParseRequest(conn io.Reader) (*Request, error) {
+func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	scanner := bufio.NewScanner(conn)
 	headers := make(map[string][]string)
-	request := &Request{Headers: headers}
+	request := &Request{Headers: headers, Scheme: scheme}
 
 	scanLines := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -85,6 +87,10 @@ func ParseRequest(conn io.Reader) (*Request, error) {
 		hValue = append(hValue, t)
 
 		headers[hName] = hValue
+
+		if hName == HeaderHost {
+			request.Host = hValue[0]
+		}
 	}
 
 	return request, nil

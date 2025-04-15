@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -32,21 +33,109 @@ type Server struct {
 	ListenTLSPort int
 	Certificate   tls.Certificate
 	DocumentRoot  string
-	backends      []Backend
 	listener      net.Listener
-	listenCh      chan bool
-	listenTLSCh   chan bool
+	ListenCh      chan bool
+	ListenTLSCh   chan bool
+	handlers      []Handler
 }
 
 type Backend struct {
-	Addr string
-	Path string
+	Addr string `yaml:"Addr"`
+	Path string `yaml:"Path"`
 }
 
 type Context struct {
 	Conn     net.Conn
 	Request  *Request
 	Response *Response
+}
+
+// If return value is true, should skip all other handlers
+type Handler interface {
+	Handle(context *Context) (bool, error)
+}
+
+type RedirectHTTPHandler struct {
+	config *Config
+}
+
+func (r RedirectHTTPHandler) Handle(c *Context) (bool, error) {
+	if c.Request.Scheme == "http" {
+		resp := StatusCode(http.StatusMovedPermanently, nil)
+		host := strings.Split(c.Request.Host, ":")[0] + ":" + strconv.Itoa(r.config.ListenTLS)
+		resp.Headers[HeaderLocation] = []string{"https://" + host + c.Request.Path}
+		resp.Content = []byte(`<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
+<TITLE>301 Moved</TITLE></HEAD><BODY>
+<H1>301 Moved</H1>
+The document has moved
+</BODY></HTML>
+`)
+		c.Response = resp
+
+		slog.Debug("redirecting to https for " + c.Conn.RemoteAddr().String())
+		return true, nil
+	}
+
+	return false, nil
+}
+
+type BackendHandler struct {
+	b *Backend
+}
+
+func (b BackendHandler) Handle(c *Context) (bool, error) {
+	if strings.HasPrefix(b.b.Path, c.Request.Path) {
+
+		url := "http://" + b.b.Addr + c.Request.Path
+		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
+		if err != nil {
+			return false, err
+		}
+
+		for k, vs := range c.Request.Headers {
+			for _, v := range vs {
+				r.Header.Add(k, v)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			return false, err
+		}
+
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, err
+		}
+
+		c.Response = StatusCode(resp.StatusCode, b)
+		return true, nil
+	}
+
+	return false, nil
+}
+
+type ServeDocumentRootHandler struct {
+	docRoot string
+}
+
+func (s ServeDocumentRootHandler) Handle(c *Context) (bool, error) {
+	if c.Request.Path == "/" {
+		c.Request.Path = "/index.html"
+	}
+
+	path := path.Join(s.docRoot, c.Request.Path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		_, isPathError := err.(*os.PathError)
+		if isPathError {
+			c.Response = NotFound()
+		}
+	} else {
+		c.Response = Ok(data)
+	}
+
+	return true, nil
 }
 
 func NewServerYaml(yamlFile string) (*Server, error) {
@@ -75,9 +164,9 @@ func NewServer(c *Config) (*Server, error) {
 		ListenPort:    c.Listen,
 		ListenTLSPort: c.ListenTLS,
 		DocumentRoot:  c.DocumentRoot,
-		listenCh:      make(chan bool, 1),
-		listenTLSCh:   make(chan bool, 1),
-		backends:      make([]Backend, 0),
+		ListenCh:      make(chan bool, 1),
+		ListenTLSCh:   make(chan bool, 1),
+		handlers:      make([]Handler, 0),
 	}
 
 	if c.CertificateFile != "" || c.CertificateKeyFile != "" {
@@ -88,26 +177,19 @@ func NewServer(c *Config) (*Server, error) {
 		s.Certificate = cert
 	}
 
+	if c.RedirectHTTP {
+		s.handlers = append(s.handlers, RedirectHTTPHandler{c})
+	}
+
 	for _, v := range c.Backends {
-		s.AddBackend(v.Addr, v.Path)
+		s.handlers = append(s.handlers, BackendHandler{&v})
+	}
+
+	if c.DocumentRoot != "" {
+		s.handlers = append(s.handlers, ServeDocumentRootHandler{c.DocumentRoot})
 	}
 
 	return s, nil
-}
-
-func (server *Server) AddBackend(addr string, path string) error {
-	if path == "" {
-		path = "/"
-	}
-
-	for _, b := range server.backends {
-		if b.Addr == addr {
-			return fmt.Errorf("backend %s already exists", addr)
-		}
-	}
-
-	server.backends = append(server.backends, Backend{addr, path})
-	return nil
 }
 
 func (server *Server) Listen() error {
@@ -118,8 +200,8 @@ func (server *Server) Listen() error {
 		return err
 	}
 
-	slog.Info("butler listening on " + address)
-	server.listenCh <- true
+	slog.Info("listening on http://" + address)
+	server.ListenCh <- true
 
 	for {
 		conn, err := listen.Accept()
@@ -128,7 +210,7 @@ func (server *Server) Listen() error {
 		}
 
 		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
-		go server.listenAndHandleRequests(conn)
+		go server.listenAndHandleRequests(conn, "http")
 	}
 }
 
@@ -143,8 +225,8 @@ func (server *Server) ListenTLS() error {
 		return err
 	}
 
-	slog.Info("butler listening on " + address)
-	server.listenTLSCh <- true
+	slog.Info("listening on https://" + address)
+	server.ListenTLSCh <- true
 
 	for {
 		conn, err := listen.Accept()
@@ -153,7 +235,7 @@ func (server *Server) ListenTLS() error {
 		}
 
 		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
-		go server.listenAndHandleRequests(conn)
+		go server.listenAndHandleRequests(conn, "https")
 	}
 }
 
@@ -161,11 +243,11 @@ func (server Server) Close() error {
 	return server.listener.Close()
 }
 
-func (server Server) listenAndHandleRequests(conn net.Conn) {
+func (server Server) listenAndHandleRequests(conn net.Conn, scheme string) {
 	for {
 		c := &Context{Conn: conn}
 
-		r, err := ParseRequest(conn)
+		r, err := ParseRequest(conn, scheme)
 		if err != nil {
 			slog.Debug(fmt.Sprintf("error reading from %s: %s, closing connection...", conn.RemoteAddr(), err.Error()))
 			c.Conn.Close()
@@ -195,39 +277,20 @@ func (server Server) listenAndHandleRequests(conn net.Conn) {
 }
 
 func (server Server) handleRequest(c *Context) error {
-	var response *Response
-
-	if backend, ok := server.GetBackend(c); ok {
-		url := "http://" + backend.Addr + c.Request.Path
-		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
+	for _, h := range server.handlers {
+		skip, err := h.Handle(c)
 		if err != nil {
 			return err
 		}
 
-		for k, vs := range c.Request.Headers {
-			for _, v := range vs {
-				r.Header.Add(k, v)
-			}
+		if skip {
+			break
 		}
-
-		resp, err := http.DefaultClient.Do(r)
-		if err != nil {
-			return err
-		}
-
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-
-		response = StatusCode(resp.StatusCode, b)
-	} else {
-		response = server.serveFromDocumentRoot(c)
 	}
 
 	gzip := false
 	hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
-	responseGzipped := slices.Contains(response.Headers[HeaderAcceptEncoding], "gzip")
+	responseGzipped := slices.Contains(c.Response.Headers[HeaderAcceptEncoding], "gzip")
 	if hasEncodingHeader && !responseGzipped {
 		v := strings.Split(hEncoding[0], ", ")
 		if slices.Contains(v, "gzip") {
@@ -235,45 +298,13 @@ func (server Server) handleRequest(c *Context) error {
 		}
 	}
 
-	response.Headers["Server"] = []string{"butler/0.1"}
+	c.Response.Headers["Server"] = []string{"butler/0.1"}
 
-	written, err := c.Conn.Write(response.Bytes(gzip, c.Request.Method == RequestHead))
+	written, err := c.Conn.Write(c.Response.Bytes(gzip, c.Request.Method == RequestHead))
 	if err != nil {
 		return errors.New("failed writing response")
 	}
 
-	c.Response = response
 	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))
 	return nil
-}
-
-func (server *Server) serveFromDocumentRoot(c *Context) *Response {
-	var r *Response
-
-	if c.Request.Path == "/" {
-		c.Request.Path = "/index.html"
-	}
-
-	path := path.Join(server.DocumentRoot, c.Request.Path)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		_, isPathError := err.(*os.PathError)
-		if isPathError {
-			r = NotFound()
-		}
-	} else {
-		r = Ok(data)
-	}
-
-	return r
-}
-
-func (server *Server) GetBackend(c *Context) (*Backend, bool) {
-	for _, b := range server.backends {
-		if strings.HasPrefix(b.Path, c.Request.Path) {
-			return &b, true
-		}
-	}
-
-	return nil, false
 }

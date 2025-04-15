@@ -11,7 +11,7 @@ Connection: close
 Accept-Encoding: gzip, deflate, br
 `)
 
-	request, err := ParseRequest(conn)
+	request, err := ParseRequest(conn, "http")
 	if err != nil {
 		t.Error(err)
 	}
@@ -33,7 +33,7 @@ Accept-Encoding: gzip, deflate, br
 Ignored body
 `)
 
-	r, _ := ParseRequest(conn)
+	r, _ := ParseRequest(conn, "http")
 
 	if len(r.Body) > 0 {
 		t.Fatal("request should not have read body")
