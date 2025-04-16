@@ -14,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
+	Host               string    `yaml:"Host"`
 	Listen             int       `yaml:"Listen"`
 	ListenTLS          int       `yaml:"ListenTLS"`
 	RedirectHTTP       bool      `yaml:"RedirectHTTP"`
@@ -28,15 +30,19 @@ type Config struct {
 }
 
 type Server struct {
-	Hostname      string
-	ListenPort    int
-	ListenTLSPort int
-	Certificate   tls.Certificate
-	DocumentRoot  string
-	listener      net.Listener
-	ListenCh      chan bool
-	ListenTLSCh   chan bool
-	handlers      []Handler
+	Host         string
+	DocumentRoot string
+
+	certificate   tls.Certificate
+	httpListener  *listener
+	httpsListener *listener
+}
+
+type listener struct {
+	port     int
+	listener net.Listener
+	readyCh  chan bool
+	handlers []handler
 }
 
 type Backend struct {
@@ -51,7 +57,7 @@ type Context struct {
 }
 
 // If return value is true, should skip all other handlers
-type Handler interface {
+type handler interface {
 	Handle(context *Context) (bool, error)
 }
 
@@ -109,6 +115,10 @@ func (b BackendHandler) Handle(c *Context) (bool, error) {
 		}
 
 		c.Response = StatusCode(resp.StatusCode, b)
+		for k, vs := range resp.Header {
+			c.Response.Headers[k] = vs
+		}
+
 		return true, nil
 	}
 
@@ -159,74 +169,101 @@ func NewServerYaml(yamlFile string) (*Server, error) {
 }
 
 func NewServer(c *Config) (*Server, error) {
-	s := &Server{
-		Hostname:      "0.0.0.0",
-		ListenPort:    c.Listen,
-		ListenTLSPort: c.ListenTLS,
-		DocumentRoot:  c.DocumentRoot,
-		ListenCh:      make(chan bool, 1),
-		ListenTLSCh:   make(chan bool, 1),
-		handlers:      make([]Handler, 0),
+	host := c.Host
+	if host == "" {
+		host = "0.0.0.0"
 	}
 
-	if c.CertificateFile != "" || c.CertificateKeyFile != "" {
+	s := &Server{
+		Host:         host,
+		DocumentRoot: c.DocumentRoot,
+	}
+
+	if c.Listen < 0 && c.ListenTLS < 0 {
+		return nil, errors.New("either Listen or ListenTLS must be set")
+	}
+
+	if c.ListenTLS > -1 && (c.CertificateFile == "" || c.CertificateKeyFile == "") {
+		return nil, errors.New("ListenTLS and both CertificateFile and CertificateKeyFile must be set")
+	}
+
+	if c.ListenTLS > -1 {
+		tl := listener{port: c.ListenTLS, readyCh: make(chan bool, 1), handlers: make([]handler, 0)}
 		cert, err := tls.LoadX509KeyPair(c.CertificateFile, c.CertificateKeyFile)
 		if err != nil {
 			return nil, err
 		}
-		s.Certificate = cert
+		s.certificate = cert
+
+		for _, v := range c.Backends {
+			tl.handlers = append(tl.handlers, BackendHandler{&v})
+		}
+
+		if c.DocumentRoot != "" {
+			tl.handlers = append(tl.handlers, ServeDocumentRootHandler{c.DocumentRoot})
+		}
+
+		s.httpsListener = &tl
 	}
 
-	if c.RedirectHTTP {
-		s.handlers = append(s.handlers, RedirectHTTPHandler{c})
-	}
+	if c.Listen > -1 {
+		tl := listener{port: c.Listen, readyCh: make(chan bool, 1), handlers: make([]handler, 0)}
 
-	for _, v := range c.Backends {
-		s.handlers = append(s.handlers, BackendHandler{&v})
-	}
+		if c.RedirectHTTP {
+			tl.handlers = append(tl.handlers, RedirectHTTPHandler{c})
+		}
 
-	if c.DocumentRoot != "" {
-		s.handlers = append(s.handlers, ServeDocumentRootHandler{c.DocumentRoot})
+		for _, v := range c.Backends {
+			tl.handlers = append(tl.handlers, BackendHandler{&v})
+		}
+
+		if c.DocumentRoot != "" {
+			tl.handlers = append(tl.handlers, ServeDocumentRootHandler{c.DocumentRoot})
+		}
+
+		s.httpListener = &tl
 	}
 
 	return s, nil
 }
 
 func (server *Server) Listen() error {
-	address := fmt.Sprintf("%s:%d", server.Hostname, server.ListenPort)
-	listen, err := net.Listen("tcp", address)
-	server.listener = listen
-	if err != nil {
-		return err
+	g := new(errgroup.Group)
+	if server.httpListener != nil {
+		g.Go(func() error {
+			return server.listen(server.httpListener, func(addr string) (net.Listener, error) {
+				return net.Listen("tcp", addr)
+			}, "http")
+		})
 	}
 
-	slog.Info("listening on http://" + address)
-	server.ListenCh <- true
-
-	for {
-		conn, err := listen.Accept()
-		if err != nil {
-			return err
-		}
-
-		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
-		go server.listenAndHandleRequests(conn, "http")
+	if server.httpsListener != nil {
+		g.Go(func() error {
+			if server.httpListener != nil {
+				<-server.httpListener.readyCh
+			}
+			return server.listen(server.httpsListener, func(addr string) (net.Listener, error) {
+				return tls.Listen("tcp", addr, &tls.Config{
+					Certificates: []tls.Certificate{server.certificate},
+				})
+			}, "https")
+		})
 	}
+
+	return g.Wait()
 }
 
-func (server *Server) ListenTLS() error {
-	address := fmt.Sprintf("%s:%d", server.Hostname, server.ListenTLSPort)
-
-	listen, err := tls.Listen("tcp", address, &tls.Config{
-		Certificates: []tls.Certificate{server.Certificate},
-	})
-
+func (server *Server) listen(listener *listener, createListener func(address string) (net.Listener, error),
+	scheme string) error {
+	address := fmt.Sprintf("%s:%d", server.Host, listener.port)
+	listen, err := createListener(address)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("listening on https://" + address)
-	server.ListenTLSCh <- true
+	listener.listener = listen
+	slog.Info("listening on " + scheme + "://" + address)
+	listener.readyCh <- true
 
 	for {
 		conn, err := listen.Accept()
@@ -235,15 +272,23 @@ func (server *Server) ListenTLS() error {
 		}
 
 		slog.Debug("accepted connection from " + conn.RemoteAddr().String())
-		go server.listenAndHandleRequests(conn, "https")
+		go listener.listenAndHandleRequests(conn, "http")
 	}
 }
 
 func (server Server) Close() error {
-	return server.listener.Close()
+	if server.httpListener != nil && server.httpListener.listener != nil {
+		server.httpListener.listener.Close()
+	}
+
+	if server.httpsListener != nil && server.httpsListener.listener != nil {
+		server.httpsListener.listener.Close()
+	}
+
+	return nil
 }
 
-func (server Server) listenAndHandleRequests(conn net.Conn, scheme string) {
+func (listener listener) listenAndHandleRequests(conn net.Conn, scheme string) {
 	for {
 		c := &Context{Conn: conn}
 
@@ -257,7 +302,7 @@ func (server Server) listenAndHandleRequests(conn net.Conn, scheme string) {
 		c.Request = r
 		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), c.Request))
 
-		err = server.handleRequest(c)
+		err = listener.handleRequest(c)
 		if err != nil {
 			slog.Error(fmt.Sprintf("failed handling request %s for %s: %s", c.Request, c.Conn.RemoteAddr(), err))
 			c.Conn.Close()
@@ -276,8 +321,8 @@ func (server Server) listenAndHandleRequests(conn net.Conn, scheme string) {
 	}
 }
 
-func (server Server) handleRequest(c *Context) error {
-	for _, h := range server.handlers {
+func (listener listener) handleRequest(c *Context) error {
+	for _, h := range listener.handlers {
 		skip, err := h.Handle(c)
 		if err != nil {
 			return err

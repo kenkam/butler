@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -33,19 +32,7 @@ func (c *ServeCmd) Run() error {
 
 	slog.Info("starting butler...")
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		log.Fatal(server.Listen())
-	}()
-	go func() {
-		defer wg.Done()
-		<-server.ListenCh
-		log.Fatal(server.ListenTLS())
-	}()
-
-	wg.Wait()
+	log.Fatal(server.Listen())
 	return nil
 }
 

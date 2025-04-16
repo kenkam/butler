@@ -14,18 +14,24 @@ func TestServerSupportsGzip(t *testing.T) {
 	// Mute server logs
 	log.SetOutput(io.Discard)
 
-	s, _ := NewServer(&Config{
-		Listen:       7777,
+	s, err := NewServer(&Config{
+		Host:         "localhost",
+		Listen:       0,
+		ListenTLS:    -1,
 		DocumentRoot: "./testdata",
 	})
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
 	go func() {
 		s.Listen()
 		defer s.Close()
 	}()
 
-	<-s.ListenCh
+	<-s.httpListener.readyCh
 
-	req, _ := http.NewRequest("GET", "http://localhost:7777/index.html", nil)
+	req, _ := http.NewRequest("GET", "http://"+s.httpListener.listener.Addr().String()+"/index.html", nil)
 	req.Header.Add("Accept-Encoding", "gzip")
 	r, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -48,7 +54,9 @@ func TestServerClosesConnection(t *testing.T) {
 	log.SetOutput(io.Discard)
 
 	s, _ := NewServer(&Config{
-		Listen:       7777,
+		Host:         "localhost",
+		Listen:       0,
+		ListenTLS:    -1,
 		DocumentRoot: "./testdata",
 	})
 	go func() {
@@ -56,9 +64,9 @@ func TestServerClosesConnection(t *testing.T) {
 		defer s.Close()
 	}()
 
-	<-s.ListenCh
+	<-s.httpListener.readyCh
 
-	addr, _ := net.ResolveTCPAddr("tcp", "localhost:7777")
+	addr, _ := net.ResolveTCPAddr("tcp", s.httpListener.listener.Addr().String())
 	conn, _ := net.DialTCP("tcp", nil, addr)
 
 	payload := `GET /index.html HTTP/1.1
@@ -88,5 +96,47 @@ Connection: close
 		return
 	case <-time.After(200 * time.Millisecond):
 		t.Error("connection was not closed")
+	}
+}
+
+func TestConfigValidation(t *testing.T) {
+	cases := []struct {
+		c *Config
+		e bool
+		n string
+	}{
+		{
+			c: &Config{
+				Listen:    -1,
+				ListenTLS: -1,
+			},
+			e: true,
+			n: "ValidPortsSet",
+		},
+		{
+			c: &Config{
+				Listen:       -1,
+				RedirectHTTP: true,
+			},
+			e: true,
+			n: "ListenSetIfRedirectHTTPSAlsoSet",
+		},
+		{
+			c: &Config{
+				ListenTLS:       443,
+				CertificateFile: "./testdata/butler.crt",
+			},
+			e: true,
+			n: "ListenTLSSetButCertificatesNotSet",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.n, func(t *testing.T) {
+			_, err := NewServer(c.c)
+			if (err != nil) != c.e {
+				t.Fatalf("expected error %v but got %v", c.e, err)
+			}
+		})
 	}
 }
