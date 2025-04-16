@@ -131,7 +131,12 @@ func NewServer(c *Config) (*Server, error) {
 	}
 
 	if c.Registrar {
-		s.registrar = newRegistrar(c.RegistrarListen, s)
+		r, err := newRegistrar(c.RegistrarListen, s)
+
+		if err != nil {
+			return nil, err
+		}
+		s.registrar = r
 	}
 
 	return s, nil
