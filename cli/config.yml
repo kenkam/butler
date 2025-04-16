@@ -2,9 +2,8 @@ Host: 0.0.0.0
 Listen: 8080
 ListenTLS: 8081
 RedirectHTTP: true
-Backends:
-  - Addr: localhost:8000
-    Path: /
+# Backends:
+#   - Addr: localhost:8000
+#     Path: /
 CertificateFile: /home/kenneth/Certs/butler.crt
 CertificateKeyFile: /home/kenneth/Certs/butler.key
-DocumentRoot: ../../void-cascade

@@ -20,8 +20,28 @@ func Ok(content []byte) *Response {
 	return StatusCode(http.StatusOK, content)
 }
 
+const hTemplate = `<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
+<TITLE>%v</TITLE></HEAD><BODY>
+<H1>%v</H1>
+</BODY></HTML>
+`
+
+func MovedPermanently(location string) *Response {
+	msg := fmt.Sprintf("%v %v", http.StatusMovedPermanently, "Moved")
+	r := StatusCode(http.StatusMovedPermanently, fmt.Appendf(nil, hTemplate, msg, msg))
+
+	r.Headers[HeaderLocation] = []string{location}
+	return r
+}
+
+func BadGateway() *Response {
+	msg := fmt.Sprintf("%v %v", http.StatusBadGateway, "Bad Gateway")
+	return StatusCode(http.StatusBadGateway, fmt.Appendf(nil, hTemplate, msg, msg))
+}
+
 func NotFound() *Response {
-	return StatusCode(http.StatusNotFound, nil)
+	msg := fmt.Sprintf("%v %v", http.StatusNotFound, "Not Found")
+	return StatusCode(http.StatusNotFound, fmt.Appendf(nil, hTemplate, msg, msg))
 }
 
 func StatusCode(statusCode int, content []byte) *Response {
@@ -51,7 +71,9 @@ func (r Response) Bytes(compressGzip bool, headersOnly bool) []byte {
 
 	statusCode := fmt.Sprintf("%s %d %s\n", r.HttpVersion, r.StatusCode, http.StatusText(r.StatusCode))
 
-	r.Headers[HeaderContentLength] = []string{strconv.Itoa(rLength)}
+	if rLength > 0 {
+		r.Headers[HeaderContentLength] = []string{strconv.Itoa(rLength)}
+	}
 
 	b := []byte{}
 	b = append(b, []byte(statusCode)...)

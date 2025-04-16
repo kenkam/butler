@@ -67,16 +67,8 @@ type RedirectHTTPHandler struct {
 
 func (r RedirectHTTPHandler) Handle(c *Context) (bool, error) {
 	if c.Request.Scheme == "http" {
-		resp := StatusCode(http.StatusMovedPermanently, nil)
 		host := strings.Split(c.Request.Host, ":")[0] + ":" + strconv.Itoa(r.config.ListenTLS)
-		resp.Headers[HeaderLocation] = []string{"https://" + host + c.Request.Path}
-		resp.Content = []byte(`<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
-<TITLE>301 Moved</TITLE></HEAD><BODY>
-<H1>301 Moved</H1>
-The document has moved
-</BODY></HTML>
-`)
-		c.Response = resp
+		c.Response = MovedPermanently("https://" + host + c.Request.Path)
 
 		slog.Debug("redirecting to https for " + c.Conn.RemoteAddr().String())
 		return true, nil
@@ -106,7 +98,7 @@ func (b BackendHandler) Handle(c *Context) (bool, error) {
 
 		resp, err := http.DefaultClient.Do(r)
 		if err != nil {
-			c.Response = StatusCode(http.StatusBadGateway, nil)
+			c.Response = BadGateway()
 			return true, nil
 		}
 
@@ -334,10 +326,15 @@ func (listener listener) handleRequest(c *Context) error {
 		}
 	}
 
+	// No handlers processed the request
+	if c.Response == nil {
+		c.Response = NotFound()
+	}
+
 	gzip := false
 	hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
 	responseGzipped := slices.Contains(c.Response.Headers[HeaderAcceptEncoding], "gzip")
-	if hasEncodingHeader && !responseGzipped {
+	if hasEncodingHeader && !responseGzipped && c.Response.Content != nil {
 		v := strings.Split(hEncoding[0], ", ")
 		if slices.Contains(v, "gzip") {
 			gzip = true

@@ -10,14 +10,13 @@ A http server written in go, for learning.
 * [x] Keep alives
 * [x] Testing
 * [x] SSL / TLS
-* [ ] Read from config
-  * [x] Initial implementation
-  * [ ] Refactor listen / listenTLS to have a unifed Listen method, validate config
+* [x] Read from config
 * [x] Redirect HTTP -> HTTPS
 * [ ] Proxy backends
   * [x] Impl
   * [ ] Tests
 * [ ] Backend registration / healthchecks
+* [ ] Content-Type support
 * [ ] Go versioning
 * [ ] CI/CD
 * [ ] POST / PUT requests via a cgi-bin like interface
