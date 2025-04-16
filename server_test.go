@@ -11,7 +11,6 @@ import (
 )
 
 func TestServerSupportsGzip(t *testing.T) {
-	// Mute server logs
 	log.SetOutput(io.Discard)
 
 	s, err := NewServer(&Config{
@@ -21,7 +20,7 @@ func TestServerSupportsGzip(t *testing.T) {
 		DocumentRoot: "./testdata",
 	})
 	if err != nil {
-		t.Fatal(err.Error())
+		t.Fatal(err)
 	}
 
 	go func() {
@@ -35,22 +34,21 @@ func TestServerSupportsGzip(t *testing.T) {
 	req.Header.Add("Accept-Encoding", "gzip")
 	r, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 
 	b, _ := os.ReadFile("./testdata/index.html")
 	if r.ContentLength >= int64(len(b)) {
-		t.Error("compressed response should be less than the original length")
+		t.Fatal("compressed response should be less than the original length")
 	}
 	if r.Header["Content-Encoding"][0] != "gzip" {
-		t.Error("returned response does not have Content-Encoding: gzip")
+		t.Fatal("returned response does not have Content-Encoding: gzip")
 	}
 
 	s.Close()
 }
 
 func TestServerClosesConnection(t *testing.T) {
-	// Mute server logs
 	log.SetOutput(io.Discard)
 
 	s, _ := NewServer(&Config{
@@ -95,7 +93,82 @@ Connection: close
 	case <-closed:
 		return
 	case <-time.After(200 * time.Millisecond):
-		t.Error("connection was not closed")
+		t.Fatal("connection was not closed")
+	}
+}
+
+func TestBackend(t *testing.T) {
+	cases := []struct {
+		p string
+		s int
+		n string
+	}{
+		{
+			p: "/",
+			s: http.StatusOK,
+			n: "PathMatch",
+		},
+		{
+			p: "/random",
+			s: http.StatusNotFound,
+			n: "PathMismatch",
+		},
+	}
+
+	log.SetOutput(io.Discard)
+
+	for _, c := range cases {
+		t.Run(c.n, func(t *testing.T) {
+			backend, _ := NewServer(&Config{
+				Host:         "localhost",
+				Listen:       0,
+				ListenTLS:    -1,
+				DocumentRoot: "./testdata",
+			})
+
+			go backend.Listen()
+			<-backend.httpListener.readyCh
+
+			proxy, _ := NewServer(&Config{
+				Listen:    0,
+				ListenTLS: -1,
+				Backends: []Backend{
+					{
+						Addr: backend.httpListener.listener.Addr().String(),
+						Path: "/",
+					},
+				},
+			})
+			go proxy.Listen()
+			<-proxy.httpListener.readyCh
+
+			resp, _ := http.Get("http://" + proxy.httpListener.listener.Addr().String() + c.p)
+			if resp.StatusCode != c.s {
+				t.Fatalf("did not get expected status code %v", c.s)
+			}
+		})
+	}
+}
+
+func TestMissingBackend(t *testing.T) {
+	log.SetOutput(io.Discard)
+
+	proxy, _ := NewServer(&Config{
+		Listen:    0,
+		ListenTLS: -1,
+		Backends: []Backend{
+			{
+				Addr: "localhost:42069",
+				Path: "/",
+			},
+		},
+	})
+	go proxy.Listen()
+	<-proxy.httpListener.readyCh
+
+	resp, _ := http.Get("http://" + proxy.httpListener.listener.Addr().String())
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502, but got %v", resp.StatusCode)
 	}
 }
 

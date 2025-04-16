@@ -82,7 +82,7 @@ type BackendHandler struct {
 }
 
 func (b BackendHandler) Handle(c *Context) (bool, error) {
-	if strings.HasPrefix(b.b.Path, c.Request.Path) {
+	if strings.HasPrefix(c.Request.Path, b.b.Path) {
 
 		url := "http://" + b.b.Addr + c.Request.Path
 		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
