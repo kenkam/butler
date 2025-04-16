@@ -13,7 +13,7 @@ A http server written in go, for learning.
 * [x] Read from config
 * [x] Redirect HTTP -> HTTPS
 * [x] Proxy backends
-* [ ] Backend registration / healthchecks
+* [x] Backend registration / healthchecks
 * [ ] Go versioning
 * [ ] CI/CD
 * [ ] POST / PUT requests via a cgi-bin like interface

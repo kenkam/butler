@@ -92,6 +92,14 @@ func (r *registrar) Listen() error {
 	return r.registrationServer.Listen()
 }
 
+func (r *registrar) Close() error {
+	if r.registrationServer != nil {
+		return r.registrationServer.Close()
+	}
+
+	return nil
+}
+
 func (r *registrar) processMessages() {
 	for {
 		select {

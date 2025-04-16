@@ -3,12 +3,14 @@ package butler
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"testing"
 )
 
 func TestRegisteringBackend(t *testing.T) {
-	// log.SetOutput(io.Discard)
+	log.SetOutput(io.Discard)
 
 	s, _ := NewServer(&Config{
 		Host:            "localhost",
@@ -24,6 +26,9 @@ func TestRegisteringBackend(t *testing.T) {
 		ListenTLS:    -1,
 		DocumentRoot: "./testdata",
 	})
+
+	defer s.Close()
+	defer b.Close()
 
 	go s.Listen()
 	go b.Listen()

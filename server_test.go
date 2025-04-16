@@ -44,8 +44,6 @@ func TestServerSupportsGzip(t *testing.T) {
 	if r.Header["Content-Encoding"][0] != "gzip" {
 		t.Fatal("returned response does not have Content-Encoding: gzip")
 	}
-
-	s.Close()
 }
 
 func TestServerClosesConnection(t *testing.T) {
@@ -140,6 +138,7 @@ func TestBackend(t *testing.T) {
 				},
 			})
 			go proxy.Listen()
+			defer proxy.Close()
 			<-proxy.httpListener.readyCh
 
 			resp, _ := http.Get("http://" + proxy.httpListener.listener.Addr().String() + c.p)
@@ -164,6 +163,7 @@ func TestMissingBackend(t *testing.T) {
 		},
 	})
 	go proxy.Listen()
+	defer proxy.Close()
 	<-proxy.httpListener.readyCh
 
 	resp, _ := http.Get("http://" + proxy.httpListener.listener.Addr().String())

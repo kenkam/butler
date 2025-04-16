@@ -154,9 +154,6 @@ func (server *Server) Listen() error {
 
 	if server.httpsListener != nil {
 		g.Go(func() error {
-			if server.httpListener != nil {
-				<-server.httpListener.readyCh
-			}
 			return server.listen(server.httpsListener, func(addr string) (net.Listener, error) {
 				return tls.Listen("tcp", addr, &tls.Config{
 					Certificates: []tls.Certificate{server.certificate},
@@ -181,6 +178,10 @@ func (server Server) Close() error {
 
 	if server.httpsListener != nil && server.httpsListener.listener != nil {
 		server.httpsListener.listener.Close()
+	}
+
+	if server.registrar != nil {
+		server.registrar.Close()
 	}
 
 	return nil
@@ -310,7 +311,7 @@ func (listener *listener) handleRequest(c *Context) error {
 
 	gzip := false
 	hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
-	responseGzipped := slices.Contains(c.Response.Headers[HeaderAcceptEncoding], "gzip")
+	responseGzipped := slices.Contains(c.Response.Headers[HeaderContentEncoding], "gzip")
 	if hasEncodingHeader && !responseGzipped && c.Response.Content != nil {
 		v := strings.Split(hEncoding[0], ", ")
 		if slices.Contains(v, "gzip") {

@@ -1,11 +1,11 @@
 Host: 0.0.0.0
 Listen: 8080
-ListenTLS: 8081
-RedirectHTTP: true
-# Backends:
-#   - Addr: localhost:8000
-#     Path: /
+ListenTLS: -1
+RedirectHTTP: false
+Backends:
+  - Addr: localhost:3000
+    Path: /ui
 CertificateFile: /home/kenneth/Certs/butler.crt
 CertificateKeyFile: /home/kenneth/Certs/butler.key
-Registrar: true
+Registrar: false
 RegistrarListen: 7070
