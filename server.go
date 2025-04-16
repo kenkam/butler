@@ -7,11 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
-	"path"
 	"slices"
-	"strconv"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -27,6 +24,8 @@ type Config struct {
 	CertificateFile    string    `yaml:"CertificateFile"`
 	CertificateKeyFile string    `yaml:"CertificateKeyFile"`
 	DocumentRoot       string    `yaml:"DocumentRoot"`
+	Registrar          bool      `yaml:"Registrar"`
+	RegistrarListen    int       `yaml:"RegistrarListen"`
 }
 
 type Server struct {
@@ -36,109 +35,23 @@ type Server struct {
 	certificate   tls.Certificate
 	httpListener  *listener
 	httpsListener *listener
+	registrar     *registrar
 }
 
 type listener struct {
 	port     int
 	listener net.Listener
 	readyCh  chan bool
-	handlers []handler
-}
-
-type Backend struct {
-	Addr string `yaml:"Addr"`
-	Path string `yaml:"Path"`
+	// TODO: Listeners should just use the same handlers, move these 2 handlers to Server
+	// TODO: Handlers access needs a mutex
+	handlers        []handler
+	fallbackHandler handler
 }
 
 type Context struct {
 	Conn     net.Conn
 	Request  *Request
 	Response *Response
-}
-
-// If return value is true, should skip all other handlers
-type handler interface {
-	Handle(context *Context) (bool, error)
-}
-
-type RedirectHTTPHandler struct {
-	config *Config
-}
-
-func (r RedirectHTTPHandler) Handle(c *Context) (bool, error) {
-	if c.Request.Scheme == "http" {
-		host := strings.Split(c.Request.Host, ":")[0] + ":" + strconv.Itoa(r.config.ListenTLS)
-		c.Response = MovedPermanently("https://" + host + c.Request.Path)
-
-		slog.Debug("redirecting to https for " + c.Conn.RemoteAddr().String())
-		return true, nil
-	}
-
-	return false, nil
-}
-
-type BackendHandler struct {
-	b *Backend
-}
-
-func (b BackendHandler) Handle(c *Context) (bool, error) {
-	if strings.HasPrefix(c.Request.Path, b.b.Path) {
-
-		url := "http://" + b.b.Addr + c.Request.Path
-		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
-		if err != nil {
-			return false, err
-		}
-
-		for k, vs := range c.Request.Headers {
-			for _, v := range vs {
-				r.Header.Add(k, v)
-			}
-		}
-
-		resp, err := http.DefaultClient.Do(r)
-		if err != nil {
-			c.Response = BadGateway()
-			return true, nil
-		}
-
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return false, err
-		}
-
-		c.Response = StatusCode(resp.StatusCode, b)
-		for k, vs := range resp.Header {
-			c.Response.Headers[k] = vs
-		}
-
-		return true, nil
-	}
-
-	return false, nil
-}
-
-type ServeDocumentRootHandler struct {
-	docRoot string
-}
-
-func (s ServeDocumentRootHandler) Handle(c *Context) (bool, error) {
-	if c.Request.Path == "/" {
-		c.Request.Path = "/index.html"
-	}
-
-	path := path.Join(s.docRoot, c.Request.Path)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		_, isPathError := err.(*os.PathError)
-		if isPathError {
-			c.Response = NotFound()
-		}
-	} else {
-		c.Response = Ok(data)
-	}
-
-	return true, nil
 }
 
 func NewServerYaml(yamlFile string) (*Server, error) {
@@ -189,11 +102,11 @@ func NewServer(c *Config) (*Server, error) {
 		s.certificate = cert
 
 		for _, v := range c.Backends {
-			tl.handlers = append(tl.handlers, BackendHandler{&v})
+			tl.handlers = append(tl.handlers, backendHandler{v})
 		}
 
 		if c.DocumentRoot != "" {
-			tl.handlers = append(tl.handlers, ServeDocumentRootHandler{c.DocumentRoot})
+			tl.handlers = append(tl.handlers, documentRootHandler{c.DocumentRoot})
 		}
 
 		s.httpsListener = &tl
@@ -203,18 +116,22 @@ func NewServer(c *Config) (*Server, error) {
 		tl := listener{port: c.Listen, readyCh: make(chan bool, 1), handlers: make([]handler, 0)}
 
 		if c.RedirectHTTP {
-			tl.handlers = append(tl.handlers, RedirectHTTPHandler{c})
+			tl.handlers = append(tl.handlers, redirectHTTPHandler{c})
 		}
 
 		for _, v := range c.Backends {
-			tl.handlers = append(tl.handlers, BackendHandler{&v})
+			tl.handlers = append(tl.handlers, backendHandler{v})
 		}
 
 		if c.DocumentRoot != "" {
-			tl.handlers = append(tl.handlers, ServeDocumentRootHandler{c.DocumentRoot})
+			tl.fallbackHandler = documentRootHandler{c.DocumentRoot}
 		}
 
 		s.httpListener = &tl
+	}
+
+	if c.Registrar {
+		s.registrar = newRegistrar(c.RegistrarListen, s)
 	}
 
 	return s, nil
@@ -243,7 +160,25 @@ func (server *Server) Listen() error {
 		})
 	}
 
+	if server.registrar != nil {
+		g.Go(func() error {
+			return server.registrar.Listen()
+		})
+	}
+
 	return g.Wait()
+}
+
+func (server Server) Close() error {
+	if server.httpListener != nil && server.httpListener.listener != nil {
+		server.httpListener.listener.Close()
+	}
+
+	if server.httpsListener != nil && server.httpsListener.listener != nil {
+		server.httpsListener.listener.Close()
+	}
+
+	return nil
 }
 
 func (server *Server) listen(listener *listener, createListener func(address string) (net.Listener, error),
@@ -269,19 +204,47 @@ func (server *Server) listen(listener *listener, createListener func(address str
 	}
 }
 
-func (server Server) Close() error {
-	if server.httpListener != nil && server.httpListener.listener != nil {
-		server.httpListener.listener.Close()
+func (server *Server) addBackend(b Backend) {
+	if server.httpListener != nil {
+		server.httpListener.addBackend(b)
 	}
 
-	if server.httpsListener != nil && server.httpsListener.listener != nil {
-		server.httpsListener.listener.Close()
+	if server.httpsListener != nil {
+		server.httpsListener.addBackend(b)
 	}
-
-	return nil
 }
 
-func (listener listener) listenAndHandleRequests(conn net.Conn, scheme string) {
+func (server *Server) removeBackend(b Backend) {
+	if server.httpListener != nil {
+		server.httpListener.removeBackend(b)
+	}
+
+	if server.httpsListener != nil {
+		server.httpsListener.removeBackend(b)
+	}
+}
+
+func (listener *listener) addBackend(b Backend) {
+	for _, h := range listener.handlers {
+		if bh, ok := h.(backendHandler); ok && bh.b.Equals(b) {
+			slog.Debug(fmt.Sprintf("backend %v already exists", bh.b))
+			return
+		}
+	}
+
+	listener.handlers = append(listener.handlers, backendHandler{b})
+}
+
+func (listener *listener) removeBackend(b Backend) {
+	listener.handlers = slices.DeleteFunc(listener.handlers, func(h handler) bool {
+		if bh, ok := h.(backendHandler); ok && bh.b.Equals(b) {
+			return true
+		}
+		return false
+	})
+}
+
+func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) {
 	for {
 		c := &Context{Conn: conn}
 
@@ -314,7 +277,8 @@ func (listener listener) listenAndHandleRequests(conn net.Conn, scheme string) {
 	}
 }
 
-func (listener listener) handleRequest(c *Context) error {
+func (listener *listener) handleRequest(c *Context) error {
+	handled := false
 	for _, h := range listener.handlers {
 		skip, err := h.Handle(c)
 		if err != nil {
@@ -322,7 +286,15 @@ func (listener listener) handleRequest(c *Context) error {
 		}
 
 		if skip {
+			handled = true
 			break
+		}
+	}
+
+	if !handled && listener.fallbackHandler != nil {
+		_, err := listener.fallbackHandler.Handle(c)
+		if err != nil {
+			return err
 		}
 	}
 

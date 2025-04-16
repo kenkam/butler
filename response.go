@@ -39,6 +39,16 @@ func BadGateway() *Response {
 	return StatusCode(http.StatusBadGateway, fmt.Appendf(nil, hTemplate, msg, msg))
 }
 
+func UnsupportedMediaType() *Response {
+	msg := fmt.Sprintf("%v %v", http.StatusUnsupportedMediaType, "Unsupported Media Type")
+	return StatusCode(http.StatusUnsupportedMediaType, fmt.Appendf(nil, hTemplate, msg, msg))
+}
+
+func BadRequest() *Response {
+	msg := fmt.Sprintf("%v %v", http.StatusBadRequest, "Bad Request")
+	return StatusCode(http.StatusBadRequest, fmt.Appendf(nil, hTemplate, msg, msg))
+}
+
 func NotFound() *Response {
 	msg := fmt.Sprintf("%v %v", http.StatusNotFound, "Not Found")
 	return StatusCode(http.StatusNotFound, fmt.Appendf(nil, hTemplate, msg, msg))

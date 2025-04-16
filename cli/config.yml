@@ -7,3 +7,5 @@ RedirectHTTP: true
 #     Path: /
 CertificateFile: /home/kenneth/Certs/butler.crt
 CertificateKeyFile: /home/kenneth/Certs/butler.key
+Registrar: true
+RegistrarListen: 7070

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -20,26 +21,34 @@ type Request struct {
 	Method  string
 	Path    string
 	Headers map[string][]string
-	Body    string
+	Body    []byte
 }
 
 func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	scanner := bufio.NewScanner(conn)
 	headers := make(map[string][]string)
 	request := &Request{Headers: headers, Scheme: scheme}
+	headersRead := false
 
 	scanLines := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
 			return 0, nil, nil
 		}
 
+		// We've read the headers, so just read all the way to the end for the body
+		if headersRead {
+			i := len(data)
+			return i, dropCR(data[0:i]), nil
+		}
+
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
-			// If this is a GET or HEAD request and we encounter a newline only,
-			// then we stop parsing the request
-			if request.Method == RequestGet || request.Method == RequestHead {
-				if len(dropCR(data[0:i])) == 0 {
+			// If this is a blank new line
+			if len(dropCR(data[0:i])) == 0 {
+				// and it's a GET or HEAD request, we stop parsing the request body
+				if request.Method == RequestGet || request.Method == RequestHead {
 					return 0, nil, bufio.ErrFinalToken
 				}
+				headersRead = true
 			}
 
 			return i + 1, dropCR(data[0:i]), nil
@@ -69,7 +78,8 @@ func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	// TODO Parse HTTP Version
 	request.Method, request.Path = cdTokens[0], cdTokens[1]
 
-	for scanner.Scan() {
+	// Parse headers
+	for scanner.Scan() && !headersRead {
 		line := scanner.Text()
 
 		hTokens := strings.Split(line, ":")
@@ -91,6 +101,28 @@ func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 		if hName == HeaderHost {
 			request.Host = hValue[0]
 		}
+	}
+
+	if request.Method == RequestGet || request.Method == RequestHead {
+		return request, nil
+	}
+
+	hLength, ok := request.Headers[HeaderContentLength]
+	if !ok || len(hLength) == 0 {
+		return request, nil
+	}
+
+	remaining, err := strconv.Atoi(hLength[0])
+	// TODO this should return bad request
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse request body
+	for remaining > 0 && scanner.Scan() {
+		b := scanner.Bytes()
+		remaining -= len(b)
+		request.Body = append(request.Body, b...)
 	}
 
 	return request, nil
