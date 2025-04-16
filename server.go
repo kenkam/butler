@@ -106,7 +106,8 @@ func (b BackendHandler) Handle(c *Context) (bool, error) {
 
 		resp, err := http.DefaultClient.Do(r)
 		if err != nil {
-			return false, err
+			c.Response = StatusCode(http.StatusBadGateway, nil)
+			return true, nil
 		}
 
 		b, err := io.ReadAll(resp.Body)
