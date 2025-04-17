@@ -1,6 +1,7 @@
 package butler
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -39,7 +40,7 @@ func (b backendHandler) Handle(c *Context) (bool, error) {
 	if strings.HasPrefix(c.Request.Path, b.b.Path) {
 
 		url := "http://" + b.b.Addr + c.Request.Path
-		r, err := http.NewRequest(c.Request.Method, url, strings.NewReader(""))
+		r, err := http.NewRequest(c.Request.Method, url, bytes.NewReader(c.Request.Body))
 		if err != nil {
 			return false, err
 		}

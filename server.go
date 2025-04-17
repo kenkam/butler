@@ -256,7 +256,19 @@ func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) 
 
 		r, err := ParseRequest(conn, scheme)
 		if err != nil {
-			slog.Debug(fmt.Sprintf("error reading from %s: %s, closing connection...", conn.RemoteAddr(), err.Error()))
+			switch err {
+			case errConnectionClosed:
+				slog.Debug(fmt.Sprintf("connection closed for %s", c.Conn.RemoteAddr()))
+			case errMalformedRequest:
+				c.Response = BadRequest()
+				err = c.flush()
+				if err != nil {
+					slog.Error(fmt.Sprintf("failed writing response for %s: %s", c.Conn.RemoteAddr(), err))
+				}
+			default:
+				slog.Error(fmt.Sprintf("failed parsing request %s for %s: %s", c.Request, c.Conn.RemoteAddr(), err))
+			}
+
 			c.Conn.Close()
 			return
 		}
@@ -267,6 +279,13 @@ func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) 
 		err = listener.handleRequest(c)
 		if err != nil {
 			slog.Error(fmt.Sprintf("failed handling request %s for %s: %s", c.Request, c.Conn.RemoteAddr(), err))
+			c.Conn.Close()
+			return
+		}
+
+		err = c.flush()
+		if err != nil {
+			slog.Error(fmt.Sprintf("failed writing response for %s: %s", c.Conn.RemoteAddr(), err))
 			c.Conn.Close()
 			return
 		}
@@ -309,21 +328,31 @@ func (listener *listener) handleRequest(c *Context) error {
 		c.Response = NotFound()
 	}
 
+	return nil
+}
+
+func (c *Context) flush() error {
 	gzip := false
-	hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
-	responseGzipped := slices.Contains(c.Response.Headers[HeaderContentEncoding], "gzip")
-	if hasEncodingHeader && !responseGzipped && c.Response.Content != nil {
-		v := strings.Split(hEncoding[0], ", ")
-		if slices.Contains(v, "gzip") {
-			gzip = true
+	headersOnly := false
+
+	if c.Request != nil {
+		hEncoding, hasEncodingHeader := c.Request.Headers[HeaderAcceptEncoding]
+		responseGzipped := slices.Contains(c.Response.Headers[HeaderContentEncoding], "gzip")
+		if hasEncodingHeader && !responseGzipped && c.Response.Content != nil {
+			v := strings.Split(hEncoding[0], ", ")
+			if slices.Contains(v, "gzip") {
+				gzip = true
+			}
 		}
+
+		headersOnly = c.Request.Method == RequestHead
 	}
 
 	c.Response.Headers["Server"] = []string{"butler/0.1"}
 
-	written, err := c.Conn.Write(c.Response.Bytes(gzip, c.Request.Method == RequestHead))
+	written, err := c.Conn.Write(c.Response.Bytes(gzip, headersOnly))
 	if err != nil {
-		return errors.New("failed writing response")
+		return err
 	}
 
 	slog.Info(fmt.Sprintf("%s %s (%d bytes)", c.Conn.RemoteAddr(), c.Request, written))

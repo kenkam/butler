@@ -15,6 +15,9 @@ const (
 	RequestHead = "HEAD"
 )
 
+var errConnectionClosed = errors.New("connection closed")
+var errMalformedRequest = errors.New("malformed request")
+
 type Request struct {
 	Scheme  string
 	Host    string
@@ -66,7 +69,7 @@ func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	scanner.Split(scanLines)
 
 	if !scanner.Scan() {
-		return nil, errors.New("no data received")
+		return nil, errConnectionClosed
 	}
 
 	if scanner.Err() != nil {
@@ -74,6 +77,10 @@ func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	}
 	controlData := scanner.Text()
 	cdTokens := strings.Fields(controlData)
+
+	if len(cdTokens) < 3 {
+		return nil, errMalformedRequest
+	}
 
 	// TODO Parse HTTP Version
 	request.Method, request.Path = cdTokens[0], cdTokens[1]
@@ -113,9 +120,8 @@ func ParseRequest(conn io.Reader, scheme string) (*Request, error) {
 	}
 
 	remaining, err := strconv.Atoi(hLength[0])
-	// TODO this should return bad request
 	if err != nil {
-		return nil, err
+		return nil, errMalformedRequest
 	}
 
 	// Parse request body
