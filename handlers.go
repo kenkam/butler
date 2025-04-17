@@ -56,6 +56,7 @@ func (b backendHandler) Handle(c *Context) (bool, error) {
 			c.Response = BadGateway()
 			return true, nil
 		}
+		defer resp.Body.Close()
 
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
