@@ -143,7 +143,7 @@ func TestBackend(t *testing.T) {
 
 			resp, _ := http.Get("http://" + proxy.httpListener.listener.Addr().String() + c.p)
 			if resp.StatusCode != c.s {
-				t.Fatalf("did not get expected status code %v", c.s)
+				t.Fatalf("expected status code %v, got %v", c.s, resp.StatusCode)
 			}
 		})
 	}

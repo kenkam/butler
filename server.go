@@ -39,13 +39,10 @@ type Server struct {
 }
 
 type listener struct {
-	port     int
-	listener net.Listener
-	readyCh  chan bool
-	// TODO: Listeners should just use the same handlers, move these 2 handlers to Server
-	// TODO: Handlers access needs a mutex
-	handlers        []handler
-	fallbackHandler handler
+	port       int
+	listener   net.Listener
+	readyCh    chan bool
+	handleFunc handleFunc
 }
 
 type Context struct {
@@ -93,45 +90,37 @@ func NewServer(c *Config) (*Server, error) {
 		return nil, errors.New("ListenTLS and both CertificateFile and CertificateKeyFile must be set")
 	}
 
+	b := &handlerBuilder{handlers: []handler{}}
+	if c.RedirectHTTP {
+		b.Use(redirectHTTPHandler{c})
+	}
+
+	for _, v := range c.Backends {
+		b.Use(backendHandler{v})
+	}
+
+	if c.DocumentRoot != "" {
+		b.Use(documentRootHandler{c.DocumentRoot})
+	}
+	handleFunc := b.Build()
+
 	if c.ListenTLS > -1 {
-		tl := listener{port: c.ListenTLS, readyCh: make(chan bool, 1), handlers: make([]handler, 0)}
+		tl := listener{port: c.ListenTLS, readyCh: make(chan bool, 1), handleFunc: handleFunc}
 		cert, err := tls.LoadX509KeyPair(c.CertificateFile, c.CertificateKeyFile)
 		if err != nil {
 			return nil, err
 		}
 		s.certificate = cert
-
-		for _, v := range c.Backends {
-			tl.handlers = append(tl.handlers, backendHandler{v})
-		}
-
-		if c.DocumentRoot != "" {
-			tl.handlers = append(tl.handlers, documentRootHandler{c.DocumentRoot})
-		}
-
 		s.httpsListener = &tl
 	}
 
 	if c.Listen > -1 {
-		tl := listener{port: c.Listen, readyCh: make(chan bool, 1), handlers: make([]handler, 0)}
-
-		if c.RedirectHTTP {
-			tl.handlers = append(tl.handlers, redirectHTTPHandler{c})
-		}
-
-		for _, v := range c.Backends {
-			tl.handlers = append(tl.handlers, backendHandler{v})
-		}
-
-		if c.DocumentRoot != "" {
-			tl.fallbackHandler = documentRootHandler{c.DocumentRoot}
-		}
-
+		tl := listener{port: c.Listen, readyCh: make(chan bool, 1), handleFunc: handleFunc}
 		s.httpListener = &tl
 	}
 
 	if c.Registrar {
-		r, err := newRegistrar(c.RegistrarListen, s)
+		r, err := newRegistrar(c.RegistrarListen)
 
 		if err != nil {
 			return nil, err
@@ -210,46 +199,6 @@ func (server *Server) listen(listener *listener, createListener func(address str
 	}
 }
 
-func (server *Server) addBackend(b Backend) {
-	if server.httpListener != nil {
-		server.httpListener.addBackend(b)
-	}
-
-	if server.httpsListener != nil {
-		server.httpsListener.addBackend(b)
-	}
-}
-
-func (server *Server) removeBackend(b Backend) {
-	if server.httpListener != nil {
-		server.httpListener.removeBackend(b)
-	}
-
-	if server.httpsListener != nil {
-		server.httpsListener.removeBackend(b)
-	}
-}
-
-func (listener *listener) addBackend(b Backend) {
-	for _, h := range listener.handlers {
-		if bh, ok := h.(backendHandler); ok && bh.b.Equals(b) {
-			slog.Debug(fmt.Sprintf("backend %v already exists", bh.b))
-			return
-		}
-	}
-
-	listener.handlers = append(listener.handlers, backendHandler{b})
-}
-
-func (listener *listener) removeBackend(b Backend) {
-	listener.handlers = slices.DeleteFunc(listener.handlers, func(h handler) bool {
-		if bh, ok := h.(backendHandler); ok && bh.b.Equals(b) {
-			return true
-		}
-		return false
-	})
-}
-
 func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) {
 	for {
 		c := &Context{Conn: conn}
@@ -276,7 +225,7 @@ func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) 
 		c.Request = r
 		slog.Debug(fmt.Sprintf("%s %s", conn.RemoteAddr(), c.Request))
 
-		err = listener.handleRequest(c)
+		err = listener.handleFunc(c)
 		if err != nil {
 			slog.Error(fmt.Sprintf("failed handling request %s for %s: %s", c.Request, c.Conn.RemoteAddr(), err))
 			c.Conn.Close()
@@ -300,35 +249,6 @@ func (listener *listener) listenAndHandleRequests(conn net.Conn, scheme string) 
 			}
 		}
 	}
-}
-
-func (listener *listener) handleRequest(c *Context) error {
-	handled := false
-	for _, h := range listener.handlers {
-		skip, err := h.Handle(c)
-		if err != nil {
-			return err
-		}
-
-		if skip {
-			handled = true
-			break
-		}
-	}
-
-	if !handled && listener.fallbackHandler != nil {
-		_, err := listener.fallbackHandler.Handle(c)
-		if err != nil {
-			return err
-		}
-	}
-
-	// No handlers processed the request
-	if c.Response == nil {
-		c.Response = NotFound()
-	}
-
-	return nil
 }
 
 func (c *Context) flush() error {

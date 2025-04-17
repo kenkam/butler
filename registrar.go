@@ -20,7 +20,6 @@ func (b Backend) Equals(o Backend) bool {
 
 type registrar struct {
 	port               int
-	backingServer      *Server
 	registrationServer *Server
 	registerCh         chan healthCheck
 	unregisterCh       chan healthCheck
@@ -31,11 +30,7 @@ type healthCheck struct {
 	b Backend
 }
 
-type putHandler struct {
-	r *registrar
-}
-
-func newRegistrar(port int, server *Server) (*registrar, error) {
+func newRegistrar(port int) (*registrar, error) {
 	s, err := NewServer(&Config{
 		Host:      "localhost",
 		Listen:    port,
@@ -45,49 +40,50 @@ func newRegistrar(port int, server *Server) (*registrar, error) {
 		return nil, err
 	}
 
-	return &registrar{port, server, s, make(chan healthCheck), make(chan healthCheck), make([]healthCheck, 0)}, nil
+	return &registrar{port, s, make(chan healthCheck), make(chan healthCheck), make([]healthCheck, 0)}, nil
 }
 
-func (p *putHandler) Handle(c *Context) (bool, error) {
-	if c.Request.Method != "PUT" || c.Request.Path != "/backends" {
-		c.Response = NotFound()
-		return true, nil
-	}
+func handlePut(r *registrar) func(*Context) error {
+	return func(c *Context) error {
+		if c.Request.Method != "PUT" || c.Request.Path != "/backends" {
+			c.Response = NotFound()
+			return nil
+		}
 
-	contentType := ""
-	hContentType, ok := c.Request.Headers[HeaderContentType]
-	if ok || len(hContentType) > 0 {
-		contentType = hContentType[0]
-	}
+		contentType := ""
+		hContentType, ok := c.Request.Headers[HeaderContentType]
+		if ok || len(hContentType) > 0 {
+			contentType = hContentType[0]
+		}
 
-	// Only support application/json for now
-	if contentType != "text/json" && contentType != "application/json" {
-		c.Response = UnsupportedMediaType()
-		return true, nil
-	}
+		// Only support application/json for now
+		if contentType != "text/json" && contentType != "application/json" {
+			c.Response = UnsupportedMediaType()
+			return nil
+		}
 
-	b := Backend{}
-	err := json.Unmarshal(c.Request.Body, &b)
-	if err != nil {
-		c.Response = BadRequest()
-		return true, nil
-	}
+		b := Backend{}
+		err := json.Unmarshal(c.Request.Body, &b)
+		if err != nil {
+			c.Response = BadRequest()
+			return nil
+		}
 
-	h := healthCheck{b}
-	healthy, err := checkHealth(h, p.r)
-	if !healthy || err != nil {
-		c.Response = BadRequest()
-		return true, nil
-	}
+		h := healthCheck{b}
+		healthy, err := checkHealth(h, r)
+		if !healthy || err != nil {
+			c.Response = BadRequest()
+			return nil
+		}
 
-	p.r.registerCh <- h
-	p.r.backingServer.addBackend(h.b)
-	c.Response = StatusCode(http.StatusNoContent, nil)
-	return true, nil
+		r.registerCh <- h
+		c.Response = StatusCode(http.StatusNoContent, nil)
+		return nil
+	}
 }
 
 func (r *registrar) Listen() error {
-	r.registrationServer.httpListener.handlers = append(r.registrationServer.httpListener.handlers, &putHandler{r})
+	r.registrationServer.httpListener.handleFunc = handlePut(r)
 	go r.processMessages()
 	return r.registrationServer.Listen()
 }
@@ -118,7 +114,6 @@ func (r *registrar) processMessages() {
 				return h.b.Equals(b.b)
 			})
 
-			r.backingServer.removeBackend(b.b)
 			slog.Debug(fmt.Sprintf("unregistering %v from backends", b))
 		}
 	}

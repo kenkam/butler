@@ -10,6 +10,8 @@ import (
 	"github.com/kenkam/butler"
 )
 
+var version = "dev"
+
 type ServeCmd struct {
 	Config string `arg:""`
 }
@@ -30,7 +32,7 @@ func (c *ServeCmd) Run() error {
 		log.Fatal(err)
 	}
 
-	slog.Info("starting butler...")
+	slog.Info(fmt.Sprintf("starting butler %v...", version))
 
 	log.Fatal(server.Listen())
 	return nil
