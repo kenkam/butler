@@ -99,6 +99,17 @@ func NewServer(c *Config) (*Server, error) {
 		b.Use(backendHandler{v})
 	}
 
+	if c.Registrar {
+		r, err := newRegistrar(c.RegistrarListen)
+
+		if err != nil {
+			return nil, err
+		}
+		s.registrar = r
+
+		b.Use(registrarBackendHandler{r})
+	}
+
 	if c.DocumentRoot != "" {
 		b.Use(documentRootHandler{c.DocumentRoot})
 	}
@@ -120,12 +131,7 @@ func NewServer(c *Config) (*Server, error) {
 	}
 
 	if c.Registrar {
-		r, err := newRegistrar(c.RegistrarListen)
 
-		if err != nil {
-			return nil, err
-		}
-		s.registrar = r
 	}
 
 	return s, nil

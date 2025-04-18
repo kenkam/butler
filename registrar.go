@@ -6,28 +6,34 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 )
 
-type Backend struct {
-	Addr string `yaml:"Addr"`
-	Path string `yaml:"Path"`
+type registrarBackendHandler struct {
+	r *registrar
 }
 
-func (b Backend) Equals(o Backend) bool {
-	return b.Addr == o.Addr && b.Path == o.Path
+func (r registrarBackendHandler) Use(next handleFunc) func(*Context) error {
+	return func(c *Context) error {
+		r.r.mu.Lock()
+		defer r.r.mu.Unlock()
+		for _, b := range r.r.backends {
+			bh := backendHandler{b}
+			next = bh.Use(next)
+		}
+
+		return next(c)
+	}
 }
 
 type registrar struct {
 	port               int
 	registrationServer *Server
-	registerCh         chan healthCheck
-	unregisterCh       chan healthCheck
-	healthChecks       []healthCheck
-}
-
-type healthCheck struct {
-	b Backend
+	registerCh         chan Backend
+	unregisterCh       chan Backend
+	backends           []Backend
+	mu                 sync.Mutex
 }
 
 func newRegistrar(port int) (*registrar, error) {
@@ -40,7 +46,7 @@ func newRegistrar(port int) (*registrar, error) {
 		return nil, err
 	}
 
-	return &registrar{port, s, make(chan healthCheck), make(chan healthCheck), make([]healthCheck, 0)}, nil
+	return &registrar{port, s, make(chan Backend), make(chan Backend), make([]Backend, 0), sync.Mutex{}}, nil
 }
 
 func handlePut(r *registrar) func(*Context) error {
@@ -69,14 +75,13 @@ func handlePut(r *registrar) func(*Context) error {
 			return nil
 		}
 
-		h := healthCheck{b}
-		healthy, err := checkHealth(h, r)
+		healthy, err := checkHealth(b, r)
 		if !healthy || err != nil {
 			c.Response = BadRequest()
 			return nil
 		}
 
-		r.registerCh <- h
+		r.registerCh <- b
 		c.Response = StatusCode(http.StatusNoContent, nil)
 		return nil
 	}
@@ -99,48 +104,53 @@ func (r *registrar) Close() error {
 func (r *registrar) processMessages() {
 	for {
 		select {
-		case nh := <-r.registerCh:
-			for _, h := range r.healthChecks {
-				if h.b.Equals(nh.b) {
+		case nb := <-r.registerCh:
+			for _, b := range r.backends {
+				if nb.Equals(b) {
 					break
 				}
 			}
 
-			go healthCheckLoop(nh, r)
-			r.healthChecks = append(r.healthChecks, nh)
+			go healthCheckLoop(nb, r)
+
+			r.mu.Lock()
+			r.backends = append(r.backends, nb)
+			r.mu.Unlock()
 
 		case b := <-r.unregisterCh:
-			r.healthChecks = slices.DeleteFunc(r.healthChecks, func(h healthCheck) bool {
-				return h.b.Equals(b.b)
+			r.mu.Lock()
+			r.backends = slices.DeleteFunc(r.backends, func(eb Backend) bool {
+				return eb.Equals(b)
 			})
+			r.mu.Unlock()
 
 			slog.Debug(fmt.Sprintf("unregistering %v from backends", b))
 		}
 	}
 }
 
-func healthCheckLoop(h healthCheck, r *registrar) {
+func healthCheckLoop(b Backend, r *registrar) {
 	for {
 		<-time.After(5 * time.Second)
 
-		healthy, err := checkHealth(h, r)
+		healthy, err := checkHealth(b, r)
 		if !healthy || err != nil {
-			r.unregisterCh <- h
+			r.unregisterCh <- b
 			return
 		}
 	}
 }
 
-func checkHealth(h healthCheck, r *registrar) (bool, error) {
-	resp, err := http.Get("http://" + h.b.Addr + "/health")
+func checkHealth(b Backend, r *registrar) (bool, error) {
+	resp, err := http.Get("http://" + b.Addr + "/health")
 	if err != nil {
-		slog.Debug(fmt.Sprintf("%v is unhealthy: %v", h.b, err))
-		r.unregisterCh <- h
+		slog.Debug(fmt.Sprintf("%v is unhealthy: %v", b, err))
+		r.unregisterCh <- b
 		return false, err
 	}
 
 	if resp.StatusCode < 200 && resp.StatusCode >= 300 {
-		slog.Debug(fmt.Sprintf("%v is unhealthy: status code: %v", h.b, resp.StatusCode))
+		slog.Debug(fmt.Sprintf("%v is unhealthy: status code: %v", b, resp.StatusCode))
 		return false, nil
 	}
 
